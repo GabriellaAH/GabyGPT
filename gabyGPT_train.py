@@ -38,12 +38,16 @@ def get_random_chunk(split):
     with open(filename, 'rb') as f:
         with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
             file_size = len(mm)
-            start_pos = random.randint(0, (file_size) - block_size * batch_size)
+            start_pos = random.randint(0, max(0, file_size - block_size * batch_size))
 
             mm.seek(start_pos)
             block = mm.read(block_size * batch_size - 1)
             decoded_block = block.decode('utf-8', errors='ignore').replace('\r', '')
             data = torch.tensor(encode(decoded_block), dtype=torch.long)
+
+    # Ensure the length of data is at least block_size
+    if len(data) < block_size:
+        data = torch.cat([data, torch.zeros(block_size - len(data))], dim=0)
 
     return data
 

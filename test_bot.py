@@ -24,7 +24,7 @@ load_model_name = 'gabyGPT-00.pkl'
 print(device)
 
 tokenizer = ByteLevelBPETokenizer("./BPEVocab/vocab.json", "./BPEVocab/merges.txt")
-vocab_size = 45000
+vocab_size = len(tokenizer.get_vocab())
 
 encode = lambda text: tokenizer.encode(text).ids
 decode = lambda token_ids: tokenizer.decode(token_ids)
