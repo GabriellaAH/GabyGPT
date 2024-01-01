@@ -5,38 +5,32 @@ import mmap
 import random
 import pickle
 from tqdm import tqdm
+from tokenizers import ByteLevelBPETokenizer
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'  # Use GPU if available
 
 # Hyperparameters for the model
 batch_size = 16
 block_size = 128
-max_iters = 30000
+max_iters = 5000
 learning_rate = 4e-4
 eval_iters = 500
 n_embd = 1140
 n_head = 32
 n_layer = 36
 dropout = 0.2
-load_model = True
-load_model_name = 'gabyGPT-0.pkl'
-save_model_name = 'gabyGPT-1.pkl'
+load_model = False
+load_model_name = 'gabyGPT-00.pkl'
+save_model_name = 'gabyGPT-00.pkl'
 
 print(device)
 
 # Load and process the vocabulary
-chars = ""
-with open("./vocab.txt", 'r', encoding='utf-8') as f:
-    text = f.read()
-    chars = sorted(list(set(text)))
+tokenizer = ByteLevelBPETokenizer("./BPEVocab/vocab.json", "./BPEVocab/merges.txt")
+vocab_size = 45000
 
-vocab_size = len(chars)
-
-# Create dictionaries for character to index and index to character conversion
-string_to_int = {ch: i for i, ch in enumerate(chars)}
-int_to_string = {i: ch for i, ch in enumerate(chars)}
-encode = lambda s: [string_to_int[c] for c in s]
-decode = lambda l: ''.join([int_to_string[i] for i in l])
+encode = lambda text: tokenizer.encode(text).ids
+decode = lambda token_ids: tokenizer.decode(token_ids)
 
 # Function to get a random chunk of text from the dataset
 def get_random_chunk(split):
@@ -203,9 +197,9 @@ class GPTLanguageModel(nn.Module):
 model = GPTLanguageModel(vocab_size)
 if load_model:
     print('loading model parameters...')
-    with open(load_model_name, 'rb') as f:
-        model = pickle.load(f)    
-    # model.load_state_dict(torch.load(load_model_name))
+    # with open(load_model_name, 'rb') as f:
+    #     model = pickle.load(f)    
+    model.load_state_dict(torch.load(load_model_name))
     print('loaded successfully!')
 
 # Count the number of trainable parameters

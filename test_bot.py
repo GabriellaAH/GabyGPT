@@ -5,6 +5,7 @@ import mmap
 import random
 import pickle
 import argparse
+from tokenizers import ByteLevelBPETokenizer
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 # device = 'cpu'
@@ -18,23 +19,15 @@ n_embd = 1140
 n_head = 32
 n_layer = 36
 dropout = 0.2
-load_model_name = 'gabyGPT-0.pkl'
+load_model_name = 'gabyGPT-00.pkl'
 
 print(device)
 
-chars = ""
-with open("./vocab.txt", 'r', encoding='utf-8') as f:
-        text = f.read()
-        chars = sorted(list(set(text)))
-        
-vocab_size = len(chars)
+tokenizer = ByteLevelBPETokenizer("./BPEVocab/vocab.json", "./BPEVocab/merges.txt")
+vocab_size = 45000
 
-string_to_int = { ch:i for i,ch in enumerate(chars) }
-int_to_string = { i:ch for i,ch in enumerate(chars) }
-encode = lambda s: [string_to_int[c] for c in s]
-decode = lambda l: ''.join([int_to_string[i] for i in l])
-
-
+encode = lambda text: tokenizer.encode(text).ids
+decode = lambda token_ids: tokenizer.decode(token_ids)
 
 
 class Head(nn.Module):
