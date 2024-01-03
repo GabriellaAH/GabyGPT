@@ -1,0 +1,5 @@
+*.pkl
+./BPEVocab
+./MyGpt
+./train
+

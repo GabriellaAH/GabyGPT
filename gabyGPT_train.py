@@ -6,22 +6,24 @@ import random
 import pickle
 from tqdm import tqdm
 from tokenizers import ByteLevelBPETokenizer
+from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'  # Use GPU if available
 
 # Hyperparameters for the model
-batch_size = 16
+batch_size = 12
 block_size = 128
-max_iters = 10000
-learning_rate = 4e-4
-eval_iters = 500
+max_iters = 25000
+learning_rate = 3e-4
+eval_iters = 1000
 n_embd = 1140
 n_head = 32
 n_layer = 36
 dropout = 0.2
 load_model = True
-load_model_name = 'gabyGPT-00.pkl'
-save_model_name = 'gabyGPT-01.pkl'
+load_model_name = 'gabyGPT-05.pkl'
+save_model_name = 'gabyGPT-06.pkl'
 
 print(device)
 
@@ -32,55 +34,60 @@ vocab_size = 45000
 encode = lambda text: tokenizer.encode(text).ids
 decode = lambda token_ids: tokenizer.decode(token_ids)
 
-def get_random_chunk(split):
-    """
-    Retrieves a random chunk of text from the dataset.
+class TextDataset(Dataset):
+    def __init__(self, file_path, block_size, tokenizer, cache_size=batch_size*2):
+        self.file_path = file_path
+        self.block_size = block_size
+        self.tokenizer = tokenizer
+        self.cache = []
+        self.cache_size = cache_size
+        self._fill_cache()        
+        self.num_samples = self._get_num_samples()
 
-    Args:
-        split (str): Indicates the dataset split to use ('train' or 'val').
+    def _fill_cache(self):
+        with open(self.file_path, 'r', encoding='utf-8') as file:
+            for _ in range(self.cache_size):
+                line = next(file, None)
+                if line is None: break
+                self.cache.append(self.tokenizer(line.strip()))
+                
+    def _get_num_samples(self):
+        # Estimate the number of samples in the file
+        with open(self.file_path, 'r', encoding='utf-8') as file:
+            count = sum(1 for _ in file)
+        return count // self.block_size
 
-    Returns:
-        torch.Tensor: A tensor containing encoded token IDs from the random text chunk.
-    """
-    filename = "./output_train.txt" if split == 'train' else "./output_val.txt"
-    with open(filename, 'rb') as f:
-        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-            file_size = len(mm)
-            start_pos = random.randint(0, max(0, file_size - block_size * batch_size))
+    def __len__(self):
+        return self.num_samples
 
-            mm.seek(start_pos)
-            block = mm.read(block_size * batch_size - 1)
-            decoded_block = block.decode('utf-8', errors='ignore').replace('\r', '')
-            data = torch.tensor(encode(decoded_block), dtype=torch.long)
+    def __getitem__(self, idx):
+        if idx >= len(self.cache):
+            self._fill_cache()
+        return torch.tensor(self.cache[idx % self.cache_size], dtype=torch.long)
 
-    # Ensure the length of data is at least block_size
-    if len(data) < block_size:
-        data = torch.cat([data, torch.zeros(block_size - len(data))], dim=0)
+        # with open(self.file_path, 'r', encoding='utf-8') as file:
+        #     for i, line in enumerate(file):
+        #         if i == idx:
+        #             encoded_chunk = self.tokenizer(line.strip())
+        #             break
+        # encoded_tensor = torch.tensor(encoded_chunk, dtype=torch.long)
+        # return encoded_tensor
 
-    return data
-
-def get_batch(split):
-    """
-    Creates a batch of data for training or validation.
-
-    Args:
-        split (str): Indicates the dataset split to use ('train' or 'val').
-
-    Returns:
-        tuple: A tuple containing two tensors (input and target) for the batch.
-    """    
-    data = get_random_chunk(split)
-    if len(data) <= block_size:
-        data = torch.cat([data, torch.zeros(block_size - len(data))], dim=0)
     
-    ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack([data[i:i + block_size] for i in ix])
-    y = torch.stack([data[i + 1:i + block_size + 1] for i in ix])
-    x, y = x.to(device), y.to(device)
-    return x, y
+def get_random_batch(data_loader, num_samples=100, pad_length=128):
+    random_indices = torch.randint(0, len(data_loader.dataset), (num_samples,))
+    random_batches = [data_loader.dataset[i] for i in random_indices]
 
+    padded_batches = [F.pad(batch, (0, pad_length - len(batch)), mode='constant', value=0) for batch in random_batches]
+    batch = torch.stack(padded_batches).to(device)
+
+    # Prepare input and target tensors
+    batch_inputs = batch[:, :-1] 
+    batch_targets = batch[:, 1:] 
+
+    return batch_inputs, batch_targets
 @torch.no_grad()
-def estimate_loss():
+def estimate_loss(train_data_loader, val_data_loader, num_samples=100):
     """
     Estimates the loss for both training and validation sets.
 
@@ -89,13 +96,15 @@ def estimate_loss():
     """    
     out = {}
     model.eval()
-    for split in ['train', 'val']:
-        losses = torch.zeros(100)
-        for k in range(100):
-            X, Y = get_batch(split)
+    for split, data_loader in [('train', train_data_loader), ('val', val_data_loader)]:
+        losses = []
+        for _ in range(num_samples):
+            X, Y = get_random_batch(data_loader)
+            X, Y = X.to(device), Y.to(device)
             logits, loss = model(X, Y)
-            losses[k] = loss.item()
-        out[split] = losses.mean()
+            losses.append(loss.item())
+            del X, Y
+        out[split] = torch.tensor(losses).mean().item()
     model.train()
     return out
 
@@ -261,11 +270,11 @@ class GPTLanguageModel(nn.Module):
         logits = self.lm_head(x)  # Project back to vocabulary size
 
         if targets is None:
-            loss = None
+            loss = None            
         else:
             B, T, C = logits.shape
             logits = logits.view(B * T, C)
-            targets = targets.view(B * T)
+            targets = targets.reshape(B * T)
             loss = F.cross_entropy(logits, targets)  # Calculate cross-entropy loss
 
         return logits, loss
@@ -306,14 +315,23 @@ print(num_parameters)
 m = model.to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
+train_ds = TextDataset("./output_train.txt", block_size, tokenizer=encode)
+train_data_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=10)
+
+val_ds = TextDataset("./output_val.txt", block_size, tokenizer=encode)
+val_data_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=10)
+
 # Training loop
 model.train()
 for iter in tqdm(range(max_iters), total=max_iters):
     if iter % eval_iters == 0 and iter > 0:
-        losses = estimate_loss()
+        del xb, yb, logits, loss
+        torch.cuda.empty_cache()        
+        losses = estimate_loss(train_data_loader, val_data_loader)
         print(f"step: {iter}, train loss: {losses['train']:.3f}, val loss: {losses['val']:.3f}")
+        torch.save(model.state_dict(), f'{load_model_name}_and_{iter}.pkl')
 
-    xb, yb = get_batch('train')
+    xb, yb = get_random_batch(train_data_loader, batch_size, pad_length=block_size)
 
     # Forward pass and compute loss
     logits, loss = model.forward(xb, yb)
