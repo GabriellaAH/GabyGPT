@@ -19,7 +19,7 @@ n_embd = 1140
 n_head = 32
 n_layer = 36
 dropout = 0.2
-load_model_name = 'gabyGPT-00.pkl'
+load_model_name = 'gabyGPT-01.pkl_and_10000.pkl'
 
 print(device)
 
@@ -31,8 +31,6 @@ decode = lambda token_ids: tokenizer.decode(token_ids)
 
 
 class Head(nn.Module):
-    """ one head of self-attention """
-
     def __init__(self, head_size):
         super().__init__()
         self.key = nn.Linear(n_embd, head_size, bias=False)
@@ -68,8 +66,6 @@ class MultiHeadAttention(nn.Module):
     
 
 class FeedFoward(nn.Module):
-    """ a simple linear layer followed by a non-linearity """
-
     def __init__(self, n_embd):
         super().__init__()
         self.net = nn.Sequential(
@@ -83,8 +79,6 @@ class FeedFoward(nn.Module):
         return self.net(x)
     
 class Block(nn.Module):
-    """ Transformer block: communication followed by computation """
-
     def __init__(self, n_embd, n_head):
         super().__init__()
         head_size = n_embd // n_head
