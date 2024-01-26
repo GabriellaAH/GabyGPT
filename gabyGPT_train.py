@@ -21,18 +21,20 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'  # Use GPU if available
 # Hyperparameters for the model
 batch_size = 10
 block_size = 128
-max_iters = 20000
+max_iters = 5010
 learning_rate = 3e-4
-eval_iters = 2000
+eval_iters = 5000
 n_embd = 1140
 n_head = 32
 n_layer = 36
 dropout = 0.2
 load_model = True
-load_model_name = 'gabyGPT-01.pkl_and_10000.pkl'
-save_model_name = 'gabyGPT-02.pkl'
+window_size = 128
+load_model_name = 'gabyGPT-22.pkl'
+save_model_name = 'gabyGPT-23.pkl'
 
 train_file = './output_train.txt'
+# train_file = './w.txt'
 val_file = './output_val.txt'
 
 print(device)
@@ -128,13 +130,13 @@ def estimate_loss(train_data_loader, val_data_loader, num_samples=100):
 
 # Definition of a single head in the multi-head attention mechanism
 class Head(nn.Module):
-    def __init__(self, head_size):
+    def __init__(self, head_size, window_size):
         super().__init__()
         self.key = nn.Linear(n_embd, head_size, bias=False)
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
-
+        self.window_size = window_size
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
@@ -150,19 +152,24 @@ class Head(nn.Module):
         B, T, C = x.shape
         k = self.key(x)  # Key
         q = self.query(x)  # Query
+        v = self.value(x)  # Value
+        
         wei = q @ k.transpose(-2, -1) * k.shape[-1] ** -0.5  # Scaled dot-product attention
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))  # Masking for causal (unidirectional) attention
+        # wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))  # Masking for causal (unidirectional) attention
+        window_mask = torch.ones(T, T).triu(diagonal=1 + self.window_size).to(x.device)
+        wei = wei.masked_fill(window_mask == 1, float('-inf'))
+        
         wei = F.softmax(wei, dim=-1)  # Softmax over the last dimension
         wei = self.dropout(wei)
-        v = self.value(x)  # Value
+        
         out = wei @ v  # Output of the attention mechanism
         return out
 
 # Multi-head attention combines several heads
 class MultiHeadAttention(nn.Module):
-    def __init__(self, num_heads, head_size):
+    def __init__(self, num_heads, head_size, window_size):
         super().__init__()
-        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.heads = nn.ModuleList([Head(head_size, window_size) for _ in range(num_heads)])
         self.proj = nn.Linear(head_size * num_heads, n_embd)
         self.dropout = nn.Dropout(dropout)
 
@@ -210,7 +217,7 @@ class Block(nn.Module):
         head_size = n_embd // n_head
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
-        self.sa = MultiHeadAttention(n_head, head_size)
+        self.sa = MultiHeadAttention(n_head, head_size, window_size)
         self.ffwd = FeedFoward(n_embd)
 
     def forward(self, x):
@@ -308,63 +315,67 @@ class GPTLanguageModel(nn.Module):
         Returns:
             torch.Tensor: Tensor of token indices including the generated tokens.
         """
-        for _ in range(max_new_tokens):
+        q = index.size(dim=1)
+        for _ in range(max_new_tokens - q):
             logits, loss = self.forward(index)
             logits = logits[:, -1, :]  # Take the last step
             probs = F.softmax(logits, dim=-1)
             index_next = torch.multinomial(probs, num_samples=1)  # Sample next token
             index = torch.cat((index, index_next), dim=1)  # Append to the sequence
+            yield index_next.item()
         return index
 
-# Initialize the model and optionally load pre-trained weights
-model = GPTLanguageModel(vocab_size)
-if load_model:
-    print('loading model parameters...')
-    # with open(load_model_name, 'rb') as f:
-    #     model = pickle.load(f)    
-    model.load_state_dict(torch.load(load_model_name))
-    print('loaded successfully!')
+if (__name__ == '__main__'):
+    # Initialize the model and optionally load pre-trained weights
+    model = GPTLanguageModel(vocab_size)
+    if load_model:
+        print('loading model parameters...')
+        # with open(load_model_name, 'rb') as f:
+        #     model = pickle.load(f)    
+        model.load_state_dict(torch.load(load_model_name))
+        print('loaded successfully!')
 
-# Count the number of trainable parameters
-num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print(f'Size of the model: {num_parameters} parameters')
+    # Count the number of trainable parameters
+    num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f'Size of the model: {num_parameters} parameters')
 
-# Move the model to the appropriate device (GPU/CPU)
-m = model.to(device)
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    # Move the model to the appropriate device (GPU/CPU)
+    m = model.to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
-# Preprocessing the data and create the tokenized file if that not exist
-create_index_table_if_not_exist(train_file)
-create_index_table_if_not_exist(val_file)
+    # Preprocessing the data and create the tokenized file if that not exist
+    create_index_table_if_not_exist(train_file)
+    create_index_table_if_not_exist(val_file)
 
-train_ds = TextDataset(f"{train_file}.pkl", block_size)
-train_sampler = SequentialBatchSampler(train_ds, batch_size)
-train_data_loader = DataLoader(train_ds, batch_sampler=train_sampler, num_workers=4)
+    train_ds = TextDataset(f"{train_file}.pkl", block_size)
+    train_sampler = SequentialBatchSampler(train_ds, batch_size)
+    train_data_loader = DataLoader(train_ds, batch_sampler=train_sampler, num_workers=4)
 
-val_ds = TextDataset(f"{val_file}.pkl", block_size)
-val_sampler = SequentialBatchSampler(val_ds, batch_size)
-val_data_loader = DataLoader(val_ds, batch_sampler=val_sampler, num_workers=4)
+    val_ds = TextDataset(f"{val_file}.pkl", block_size)
+    val_sampler = SequentialBatchSampler(val_ds, batch_size)
+    val_data_loader = DataLoader(val_ds, batch_sampler=val_sampler, num_workers=4)
 
-# Training loop
-model.train()
-for iter in tqdm(range(max_iters), total=max_iters):
-    if iter % eval_iters == 0 and iter > 0:
-        del xb, yb, logits, loss
-        torch.cuda.empty_cache()        
-        losses = estimate_loss(train_data_loader, val_data_loader)
-        print(f"step: {iter}, train loss: {losses['train']:.3f}, val loss: {losses['val']:.3f}")
-        torch.save(model.state_dict(), f'{load_model_name}_and_{iter}.pkl')
+    # Training loop
+    model.train()
+    for iter in tqdm(range(max_iters), total=max_iters):
+        if iter % eval_iters == 0 and iter > 0:        
+            del xb, yb, logits, loss
+            torch.cuda.empty_cache()        
+            torch.save(model.state_dict(), f'{load_model_name}_and_{iter}.pkl')
+            losses = estimate_loss(train_data_loader, val_data_loader)        
+            print(f"step: {iter}, train loss: {losses['train']:.3f}, val loss: {losses['val']:.3f}")
+            
 
-    xb, yb = get_random_batch(train_data_loader, batch_size)
+        xb, yb = get_random_batch(train_data_loader, batch_size)
 
-    # Forward pass and compute loss
-    logits, loss = model.forward(xb, yb)
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
+        # Forward pass and compute loss
+        logits, loss = model.forward(xb, yb)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
 
-print(loss.item())
+    print(loss.item())
 
-# Save the trained model
-torch.save(model.state_dict(), save_model_name)
-print('model saved')
+    # Save the trained model
+    torch.save(model.state_dict(), save_model_name)
+    print('model saved')
